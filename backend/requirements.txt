@@ -2,7 +2,6 @@ fastapi
 uvicorn[standard]
 supabase
 httpx
-python-jose[cryptography]
 pydantic-settings
 resend
 python-dotenv
