@@ -35,7 +35,11 @@ export default function Onboarding() {
       await refetchProfile()
       navigate('/dashboard')
     } catch (err) {
-      setError(err.response?.data?.detail || 'Something went wrong')
+      if (err.response) {
+        setError(`Error ${err.response.status}: ${err.response.data?.detail || err.response.statusText}`)
+      } else {
+        setError('Could not reach the server — likely a CORS issue. Check that FRONTEND_URL is set on the Render backend service.')
+      }
     } finally {
       setSaving(false)
     }

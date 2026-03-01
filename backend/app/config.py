@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     groq_model: str = "llama3-70b-8192"
     resend_api_key: str
     resend_from_email: str
+    # Comma-separated list of allowed frontend origins, e.g.:
+    # "https://elitebuilders-frontend.onrender.com,http://localhost:5173"
     frontend_url: str = "http://localhost:5173"
 
     class Config:

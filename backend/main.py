@@ -5,7 +5,12 @@ from app.routers import auth, challenges, submissions, leaderboard, scoring, adm
 
 app = FastAPI(title="EliteBuilders API", version="1.0.0")
 
-_origins = list({settings.frontend_url, "http://localhost:5173"} - {""})
+# Support comma-separated list in FRONTEND_URL env var
+_origins = list({
+    o.strip()
+    for o in settings.frontend_url.split(",")
+    if o.strip()
+} | {"http://localhost:5173"})
 
 app.add_middleware(
     CORSMiddleware,
