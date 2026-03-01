@@ -27,12 +27,17 @@ services:
       - key: FRONTEND_URL
         sync: false
 
-  # ── Frontend: React + Vite (Static Site) ─────────────────────
-  - type: static
+  # ── Frontend: React + Vite (served via `serve`) ──────────────
+  # Render blueprints don't support type:static — we use a Node
+  # web service with `npx serve -s dist` instead.
+  # The -s flag enables SPA mode (all routes → index.html).
+  - type: web
     name: elitebuilders-frontend
+    runtime: node
     rootDir: frontend
     buildCommand: npm install && npm run build
-    staticPublishPath: dist
+    startCommand: npx serve -s dist -l $PORT
+    plan: free
     envVars:
       # Set to the backend web service URL after first deploy
       # e.g. https://elitebuilders-backend.onrender.com
@@ -42,8 +47,3 @@ services:
         sync: false
       - key: VITE_SUPABASE_ANON_KEY
         sync: false
-    routes:
-      # Catch-all for React Router — serve index.html for all paths
-      - type: rewrite
-        source: /*
-        destination: /index.html
