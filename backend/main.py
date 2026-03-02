@@ -32,3 +32,9 @@ app.include_router(profiles.router, prefix="/api")
 @app.get("/health")
 def health():
     return {"status": "ok", "version": "1.0.0", "allowed_origins": _origins}
+
+
+@app.post("/ping")
+def ping():
+    """No-auth POST endpoint — used to isolate CORS vs auth issues."""
+    return {"pong": True}

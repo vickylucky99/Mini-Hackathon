@@ -7,6 +7,18 @@ import { Zap, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
+async function pingBackend() {
+  try {
+    const res = await fetch(`${API_URL}/ping`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    })
+    return res.ok ? 'reachable (CORS OK)' : `reachable but returned ${res.status}`
+  } catch (e) {
+    return `unreachable — ${e.message}`
+  }
+}
+
 export default function Onboarding() {
   const { profile, refetchProfile } = useAuth()
   const navigate = useNavigate()
@@ -36,7 +48,6 @@ export default function Onboarding() {
       payload.company_logo_url = form.company_logo_url
     }
 
-    // Grab token for debug info
     const { data: { session } } = await supabase.auth.getSession()
     const hasToken = !!session?.access_token
 
@@ -48,33 +59,39 @@ export default function Onboarding() {
       let title = 'Request failed'
       let detail = ''
       let hint = ''
+      let pingResult = null
 
       if (!err.response) {
-        // Network error — no response received at all
         title = 'Cannot reach the backend'
         detail = err.message || 'Network Error'
+
+        // Ping the no-auth endpoint to distinguish CORS vs network
+        pingResult = await pingBackend()
+
         if (API_URL.includes('localhost')) {
-          hint = 'VITE_API_URL is not set — the frontend is calling localhost:8000 instead of your Render backend. Set VITE_API_URL in the Render frontend service env vars.'
+          hint = 'VITE_API_URL is not set — the frontend is calling localhost:8000 instead of the Render backend.'
+        } else if (pingResult.includes('unreachable')) {
+          hint = 'Even the no-auth /ping endpoint failed — this is a network or CORS issue. Check FRONTEND_URL on the Render backend service.'
         } else {
-          hint = `Check that the backend is running at ${API_URL} and that FRONTEND_URL on the backend includes this frontend's origin.`
+          hint = '/ping succeeded but the authenticated endpoint failed — the Authorization header may be getting stripped. Check browser console (F12 → Network → look at the OPTIONS preflight response headers).'
         }
       } else if (err.response.status === 401) {
         title = 'Authentication failed (401)'
         detail = err.response.data?.detail || 'Unauthorized'
         hint = hasToken
-          ? 'A token was sent but the backend rejected it. Verify SUPABASE_JWT_SECRET on the Render backend matches the JWT Secret in your Supabase project (Settings → API → JWT Secret).'
-          : 'No session token found. Your Supabase session may have expired — try signing out and signing in again.'
+          ? 'Token sent but backend rejected it. Check Render backend logs for the full error.'
+          : 'No session token — try signing out and back in.'
       } else if (err.response.status === 422) {
         title = 'Validation error (422)'
         detail = JSON.stringify(err.response.data?.detail || err.response.data, null, 2)
-        hint = 'The form data sent to the backend failed validation.'
+        hint = 'Form data failed backend validation.'
       } else {
         title = `Server error (${err.response.status})`
         detail = err.response.data?.detail || err.response.statusText
         hint = 'Check the Render backend service logs for the full traceback.'
       }
 
-      setError({ title, detail, hint, hasToken, apiUrl: API_URL })
+      setError({ title, detail, hint, hasToken, apiUrl: API_URL, pingResult })
     } finally {
       setSaving(false)
     }
@@ -177,7 +194,6 @@ export default function Onboarding() {
               </div>
             </div>
 
-            {/* Collapsible debug details */}
             <button
               type="button"
               onClick={() => setShowDebug(!showDebug)}
@@ -190,18 +206,26 @@ export default function Onboarding() {
             {showDebug && (
               <div className="px-4 py-3 bg-gray-950 border-t border-red-800/50 text-xs font-mono space-y-1.5">
                 <div className="flex gap-2">
-                  <span className="text-gray-500 w-24 shrink-0">API URL</span>
+                  <span className="text-gray-500 w-28 shrink-0">API URL</span>
                   <span className="text-gray-300 break-all">{error.apiUrl}</span>
                 </div>
                 <div className="flex gap-2">
-                  <span className="text-gray-500 w-24 shrink-0">Token</span>
+                  <span className="text-gray-500 w-28 shrink-0">Token</span>
                   <span className={error.hasToken ? 'text-green-400' : 'text-red-400'}>
-                    {error.hasToken ? 'present' : 'missing — session not established'}
+                    {error.hasToken ? 'present' : 'missing'}
                   </span>
                 </div>
+                {error.pingResult && (
+                  <div className="flex gap-2">
+                    <span className="text-gray-500 w-28 shrink-0">/ping (no auth)</span>
+                    <span className={error.pingResult.includes('CORS OK') ? 'text-green-400' : 'text-yellow-400'}>
+                      {error.pingResult}
+                    </span>
+                  </div>
+                )}
                 {error.detail && (
                   <div className="flex gap-2">
-                    <span className="text-gray-500 w-24 shrink-0">Detail</span>
+                    <span className="text-gray-500 w-28 shrink-0">Detail</span>
                     <pre className="text-gray-300 whitespace-pre-wrap break-all">{error.detail}</pre>
                   </div>
                 )}
