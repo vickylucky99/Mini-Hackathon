@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
-import { supabase } from '../lib/supabase'
 import api from '../lib/api'
 import { Zap, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react'
 
@@ -48,8 +47,7 @@ export default function Onboarding() {
       payload.company_logo_url = form.company_logo_url
     }
 
-    const { data: { session } } = await supabase.auth.getSession()
-    const hasToken = !!session?.access_token
+    const hasToken = !!(await window.Clerk?.session?.getToken())
 
     try {
       await api.post('/api/auth/profile', payload)

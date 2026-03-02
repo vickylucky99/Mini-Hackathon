@@ -1,3 +1,10 @@
+databases:
+  # ── Render PostgreSQL ─────────────────────────────────────────
+  - name: elitebuilders-db
+    plan: free
+    databaseName: elitebuilders
+    user: elitebuilders
+
 services:
   # ── Backend: FastAPI ─────────────────────────────────────────
   - type: web
@@ -8,11 +15,13 @@ services:
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     plan: free
     envVars:
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_SERVICE_ROLE_KEY
-        sync: false
-      - key: SUPABASE_JWT_SECRET
+      # Automatically injected by Render when linked to elitebuilders-db
+      - key: DATABASE_URL
+        fromDatabase:
+          name: elitebuilders-db
+          property: connectionString
+      # Clerk — from Clerk Dashboard → API Keys → "JWKS URL"
+      - key: CLERK_JWKS_URL
         sync: false
       - key: GROQ_API_KEY
         sync: false
@@ -22,7 +31,7 @@ services:
         sync: false
       - key: RESEND_FROM_EMAIL
         sync: false
-      # Set this to your Render frontend URL after first deploy
+      # Set to your Render frontend URL after first deploy
       # e.g. https://elitebuilders-frontend.onrender.com
       - key: FRONTEND_URL
         sync: false
@@ -43,7 +52,6 @@ services:
       # e.g. https://elitebuilders-backend.onrender.com
       - key: VITE_API_URL
         sync: false
-      - key: VITE_SUPABASE_URL
-        sync: false
-      - key: VITE_SUPABASE_ANON_KEY
+      # Clerk — from Clerk Dashboard → API Keys → "Publishable key"
+      - key: VITE_CLERK_PUBLISHABLE_KEY
         sync: false

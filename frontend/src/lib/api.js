@@ -1,26 +1,25 @@
 import axios from 'axios'
-import { supabase } from './supabase'
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || 'http://localhost:8000',
 })
 
-// Attach Supabase JWT to every request
+// Attach Clerk JWT to every request.
+// ClerkProvider mounts window.Clerk; session.getToken() returns the current JWT.
 api.interceptors.request.use(async (config) => {
-  const { data: { session } } = await supabase.auth.getSession()
-  if (session?.access_token) {
-    config.headers.Authorization = `Bearer ${session.access_token}`
+  const token = await window.Clerk?.session?.getToken()
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
   }
   return config
 })
 
-// On 401, sign out and redirect to home so the user re-authenticates
-// This handles stale sessions (e.g. after Supabase project restore)
+// On 401, sign out and redirect to home
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
     if (error.response?.status === 401) {
-      await supabase.auth.signOut()
+      await window.Clerk?.signOut()
       window.location.href = '/'
     }
     return Promise.reject(error)

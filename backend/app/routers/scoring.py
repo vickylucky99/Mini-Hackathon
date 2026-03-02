@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from app.database import supabase
+from app.database import db_fetchone
 from app.middleware.auth import get_current_user
 from app.services import groq_scorer
 
@@ -15,8 +15,11 @@ async def trigger_scoring(
     if current_user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
 
-    sub = supabase.table("submissions").select("id, status").eq("id", submission_id).single().execute()
-    if not sub.data:
+    sub = db_fetchone(
+        "SELECT id, status FROM submissions WHERE id = :id",
+        {"id": submission_id},
+    )
+    if not sub:
         raise HTTPException(status_code=404, detail="Submission not found")
 
     background_tasks.add_task(groq_scorer.score_submission, submission_id)

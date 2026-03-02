@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
-from app.database import supabase
+from app.database import db_fetchone, db_fetchall, db_execute
 from app.middleware.auth import get_current_user
 from app.models.submission import JudgeOverride
-from app.services import badge_service, email_service
+from app.services import badge_service
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -19,24 +19,31 @@ def judge_override(
     body: JudgeOverride,
     current_user: dict = Depends(_require_admin),
 ):
-    result = supabase.table("submissions").update({
-        "final_score": body.final_score,
-        "judge_id": current_user["id"],
-        "status": "reviewed",
-    }).eq("id", submission_id).select("*").single().execute()
-    if not result.data:
+    result = db_execute(
+        """
+        UPDATE submissions
+        SET final_score = :final_score, judge_id = :judge_id, status = 'reviewed'
+        WHERE id = :id
+        RETURNING *
+        """,
+        {"final_score": body.final_score, "judge_id": current_user["id"], "id": submission_id},
+    )
+    if not result:
         raise HTTPException(status_code=404, detail="Submission not found")
-    return result.data
+    return result
 
 
 @router.post("/challenges/{challenge_id}/close", response_model=dict)
 def close_challenge(challenge_id: str, current_user: dict = Depends(_require_admin)):
-    result = supabase.table("challenges").update({"status": "closed"}).eq("id", challenge_id).select("*").single().execute()
-    if not result.data:
+    result = db_execute(
+        "UPDATE challenges SET status = 'closed' WHERE id = :id RETURNING *",
+        {"id": challenge_id},
+    )
+    if not result:
         raise HTTPException(status_code=404, detail="Challenge not found")
 
     badge_service.close_challenge_badges(challenge_id)
-    return {"message": "Challenge closed and badges awarded", "challenge": result.data}
+    return {"message": "Challenge closed and badges awarded", "challenge": result}
 
 
 @router.post("/badges/award", response_model=dict)
@@ -55,7 +62,22 @@ def award_badge_manual(
 
 @router.get("/submissions/queue", response_model=list)
 def judge_queue(current_user: dict = Depends(_require_admin)):
-    result = supabase.table("submissions").select(
-        "*, profiles(name, github_url), challenges(title)"
-    ).eq("status", "scored").is_("judge_id", "null").order("llm_total_score", desc=True).execute()
-    return result.data or []
+    rows = db_fetchall(
+        """
+        SELECT s.*,
+            p.name AS builder_name, p.github_url AS builder_github_url,
+            c.title AS challenge_title
+        FROM submissions s
+        JOIN profiles p ON s.builder_id = p.id
+        JOIN challenges c ON s.challenge_id = c.id
+        WHERE s.status = 'scored' AND s.judge_id IS NULL
+        ORDER BY s.llm_total_score DESC NULLS LAST
+        """,
+    )
+    for row in rows:
+        row["profiles"] = {
+            "name": row.pop("builder_name", None),
+            "github_url": row.pop("builder_github_url", None),
+        }
+        row["challenges"] = {"title": row.pop("challenge_title", None)}
+    return rows

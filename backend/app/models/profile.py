@@ -5,6 +5,7 @@ from datetime import datetime
 
 class ProfileUpsert(BaseModel):
     name: Optional[str] = None
+    email: Optional[str] = None
     bio: Optional[str] = None
     github_url: Optional[str] = None
     cv_url: Optional[str] = None
@@ -16,6 +17,7 @@ class ProfileUpsert(BaseModel):
 class ProfileOut(BaseModel):
     id: str
     user_id: str
+    email: Optional[str]
     role: str
     name: Optional[str]
     bio: Optional[str]

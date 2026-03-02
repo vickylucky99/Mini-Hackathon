@@ -2,8 +2,8 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    supabase_url: str
-    supabase_service_role_key: str
+    database_url: str                          # Render PostgreSQL internal URL
+    clerk_jwks_url: str                        # From Clerk Dashboard → API Keys
     groq_api_key: str
     groq_model: str = "llama3-70b-8192"
     resend_api_key: str

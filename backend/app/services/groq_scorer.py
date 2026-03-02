@@ -2,7 +2,7 @@ import json
 import logging
 from groq import Groq
 from app.config import settings
-from app.database import supabase
+from app.database import db_fetchone, db_run
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,6 @@ def _call_groq(messages: list, attempt: int = 1) -> str:
 
 def _parse_score(raw: str) -> dict:
     raw = raw.strip()
-    # Strip markdown code fences if present
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
@@ -48,24 +47,29 @@ def _parse_score(raw: str) -> dict:
 
 
 async def score_submission(submission_id: str) -> dict | None:
-    # Fetch submission
-    sub_res = supabase.table("submissions").select("*, challenges(title, rubric_json), profiles(name)").eq("id", submission_id).single().execute()
-    if not sub_res.data:
+    row = db_fetchone(
+        """
+        SELECT s.*, c.title AS challenge_title, c.rubric_json, p.name AS builder_name
+        FROM submissions s
+        JOIN challenges c ON s.challenge_id = c.id
+        JOIN profiles p ON s.builder_id = p.id
+        WHERE s.id = :id
+        """,
+        {"id": submission_id},
+    )
+    if not row:
         logger.error(f"Submission {submission_id} not found")
         return None
 
-    sub = sub_res.data
-    challenge = sub.get("challenges", {})
-    builder = sub.get("profiles", {})
-
-    user_prompt = f"""Builder: {builder.get('name', 'Unknown')}
-Challenge: {challenge.get('title', 'Unknown')}
-RUBRIC: {json.dumps(challenge.get('rubric_json', []), indent=2)}
+    rubric = row.get("rubric_json") or []
+    user_prompt = f"""Builder: {row.get('builder_name', 'Unknown')}
+Challenge: {row.get('challenge_title', 'Unknown')}
+RUBRIC: {json.dumps(rubric, indent=2)}
 
 SUBMISSION:
-- GitHub Repository: {sub.get('repo_url', 'Not provided')}
-- Pitch Deck: {sub.get('deck_url', 'Not provided')}
-- Demo Video: {sub.get('video_url', 'Not provided')}
+- GitHub Repository: {row.get('repo_url', 'Not provided')}
+- Pitch Deck: {row.get('deck_url', 'Not provided')}
+- Demo Video: {row.get('video_url', 'Not provided')}
 
 Score each criterion in the rubric on a 0-100 scale. Be specific and actionable in feedback.
 Return ONLY the JSON object."""
@@ -86,36 +90,47 @@ Return ONLY the JSON object."""
         except (json.JSONDecodeError, Exception) as e:
             logger.warning(f"Attempt {attempt} failed for submission {submission_id}: {e}")
             if attempt == 1 and raw_response:
-                # Retry with JSON fix prompt
                 messages = [
                     {"role": "system", "content": FIX_JSON_PROMPT},
                     {"role": "user", "content": raw_response},
                 ]
             else:
                 logger.error(f"All scoring attempts failed for submission {submission_id}")
-                # Log the failure
-                supabase.table("llm_eval_logs").insert({
-                    "submission_id": submission_id,
-                    "prompt_text": user_prompt,
-                    "raw_response": raw_response,
-                    "parsed_score": None,
-                }).execute()
+                db_run(
+                    """
+                    INSERT INTO llm_eval_logs (submission_id, prompt_text, raw_response)
+                    VALUES (:submission_id, :prompt_text, :raw_response)
+                    """,
+                    {"submission_id": submission_id, "prompt_text": user_prompt, "raw_response": raw_response},
+                )
                 return None
 
     # Log successful eval
-    supabase.table("llm_eval_logs").insert({
-        "submission_id": submission_id,
-        "prompt_text": user_prompt,
-        "raw_response": raw_response,
-        "parsed_score": parsed,
-    }).execute()
+    db_run(
+        """
+        INSERT INTO llm_eval_logs (submission_id, prompt_text, raw_response, parsed_score)
+        VALUES (:submission_id, :prompt_text, :raw_response, :parsed_score::jsonb)
+        """,
+        {
+            "submission_id": submission_id,
+            "prompt_text": user_prompt,
+            "raw_response": raw_response,
+            "parsed_score": json.dumps(parsed),
+        },
+    )
 
-    # Update submission with score
     total_score = parsed.get("total_score", 0)
-    supabase.table("submissions").update({
-        "llm_score_json": parsed,
-        "llm_total_score": total_score,
-        "status": "scored",
-    }).eq("id", submission_id).execute()
+    db_run(
+        """
+        UPDATE submissions
+        SET llm_score_json = :llm_score_json::jsonb, llm_total_score = :total_score, status = 'scored'
+        WHERE id = :id
+        """,
+        {
+            "llm_score_json": json.dumps(parsed),
+            "total_score": total_score,
+            "id": submission_id,
+        },
+    )
 
     return parsed

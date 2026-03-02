@@ -1,32 +1,24 @@
 import { createContext, useContext, useEffect, useState } from 'react'
-import { supabase } from '../lib/supabase'
+import { useUser, useClerk } from '@clerk/clerk-react'
 import api from '../lib/api'
 
 const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
-  const [session, setSession] = useState(null)
+  const { user, isLoaded } = useUser()
+  const { signOut: clerkSignOut, openSignIn } = useClerk()
   const [profile, setProfile] = useState(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session)
-      if (session) fetchProfile()
-      else setLoading(false)
-    })
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session)
-      if (session) fetchProfile()
-      else {
-        setProfile(null)
-        setLoading(false)
-      }
-    })
-
-    return () => subscription.unsubscribe()
-  }, [])
+    if (!isLoaded) return
+    if (user) {
+      fetchProfile()
+    } else {
+      setProfile(null)
+      setLoading(false)
+    }
+  }, [user, isLoaded])
 
   async function fetchProfile() {
     try {
@@ -39,21 +31,20 @@ export function AuthProvider({ children }) {
     }
   }
 
-  async function signInWithGoogle() {
-    await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: { redirectTo: `${window.location.origin}/auth/callback` },
-    })
+  function signIn() {
+    openSignIn({ afterSignInUrl: '/auth/callback', afterSignUpUrl: '/auth/callback' })
   }
 
   async function signOut() {
-    await supabase.auth.signOut()
-    setSession(null)
+    await clerkSignOut()
     setProfile(null)
   }
 
+  // Expose `session` as a boolean alias so existing code that checks `if (session)` works.
+  const session = !!user
+
   return (
-    <AuthContext.Provider value={{ session, profile, loading, signInWithGoogle, signOut, refetchProfile: fetchProfile }}>
+    <AuthContext.Provider value={{ session, profile, loading, signIn, signInWithGoogle: signIn, signOut, refetchProfile: fetchProfile }}>
       {children}
     </AuthContext.Provider>
   )

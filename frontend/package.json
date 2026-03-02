@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.47.0",
+    "@clerk/clerk-react": "^5.0.0",
     "axios": "^1.7.9",
     "jspdf": "^2.5.2",
     "lucide-react": "^0.468.0",

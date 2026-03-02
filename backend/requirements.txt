@@ -1,6 +1,8 @@
 fastapi
 uvicorn[standard]
-supabase
+psycopg2-binary
+sqlalchemy
+PyJWT[crypto]
 httpx
 pydantic-settings
 resend

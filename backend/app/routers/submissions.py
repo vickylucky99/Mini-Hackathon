@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from datetime import datetime, timezone
-from app.database import supabase
+from app.database import db_fetchone, db_fetchall, db_execute, db_run
 from app.middleware.auth import get_current_user
 from app.models.submission import SubmissionCreate, SubmissionOut, JudgeOverride
 from app.services import groq_scorer, email_service, badge_service
@@ -26,61 +26,78 @@ async def create_submission(
     _validate_url(body.deck_url, "deck_url")
     _validate_url(body.video_url, "video_url")
 
-    # Check deadline
-    challenge = supabase.table("challenges").select("deadline, title, status").eq("id", body.challenge_id).single().execute()
-    if not challenge.data:
+    challenge = db_fetchone(
+        "SELECT id, deadline, title, status FROM challenges WHERE id = :id",
+        {"id": body.challenge_id},
+    )
+    if not challenge:
         raise HTTPException(status_code=404, detail="Challenge not found")
-    if challenge.data["status"] != "active":
+    if challenge["status"] != "active":
         raise HTTPException(status_code=400, detail="Challenge is not active")
 
-    deadline = datetime.fromisoformat(challenge.data["deadline"].replace("Z", "+00:00"))
+    deadline_str = challenge["deadline"]
+    if isinstance(deadline_str, str):
+        deadline = datetime.fromisoformat(deadline_str.replace("Z", "+00:00"))
+    else:
+        deadline = deadline_str  # already a datetime from psycopg2
     if datetime.now(timezone.utc) > deadline:
         raise HTTPException(status_code=400, detail="Submission deadline has passed")
 
-    # Check duplicate
-    existing = supabase.table("submissions").select("id").eq("builder_id", current_user["id"]).eq("challenge_id", body.challenge_id).execute()
-    if existing.data:
+    existing = db_fetchone(
+        "SELECT id FROM submissions WHERE builder_id = :builder_id AND challenge_id = :challenge_id",
+        {"builder_id": current_user["id"], "challenge_id": body.challenge_id},
+    )
+    if existing:
         raise HTTPException(status_code=409, detail="You have already submitted to this challenge")
 
-    data = {
-        "builder_id": current_user["id"],
-        "challenge_id": body.challenge_id,
-        "repo_url": body.repo_url,
-        "deck_url": body.deck_url,
-        "video_url": body.video_url,
-        "status": "pending",
-    }
-    result = supabase.table("submissions").insert(data).select("*").single().execute()
-    if not result.data:
+    result = db_execute(
+        """
+        INSERT INTO submissions (builder_id, challenge_id, repo_url, deck_url, video_url, status)
+        VALUES (:builder_id, :challenge_id, :repo_url, :deck_url, :video_url, 'pending')
+        RETURNING *
+        """,
+        {
+            "builder_id": current_user["id"],
+            "challenge_id": body.challenge_id,
+            "repo_url": body.repo_url,
+            "deck_url": body.deck_url,
+            "video_url": body.video_url,
+        },
+    )
+    if not result:
         raise HTTPException(status_code=500, detail="Failed to create submission")
 
-    submission_id = result.data["id"]
-
-    # Get builder email from Supabase Auth
-    user_data = supabase.auth.admin.get_user_by_id(current_user["user_id"])
-    builder_email = user_data.user.email if user_data.user else None
+    builder_email = current_user.get("email")
+    builder_name = current_user.get("name", "Builder")
+    challenge_title = challenge["title"]
+    submission_id = result["id"]
 
     if builder_email:
         email_service.send_submission_confirmed(
             to=builder_email,
-            builder_name=current_user.get("name", "Builder"),
-            challenge_title=challenge.data["title"],
+            builder_name=builder_name,
+            challenge_title=challenge_title,
         )
 
-    # Trigger async scoring
     background_tasks.add_task(
         _run_scoring,
         submission_id=submission_id,
         builder_email=builder_email,
-        builder_name=current_user.get("name", "Builder"),
-        challenge_title=challenge.data["title"],
+        builder_name=builder_name,
+        challenge_title=challenge_title,
         builder_id=current_user["id"],
     )
 
-    return result.data
+    return result
 
 
-async def _run_scoring(submission_id: str, builder_email: str | None, builder_name: str, challenge_title: str, builder_id: str):
+async def _run_scoring(
+    submission_id: str,
+    builder_email: str | None,
+    builder_name: str,
+    challenge_title: str,
+    builder_id: str,
+):
     score_result = await groq_scorer.score_submission(submission_id)
     if score_result and builder_email:
         email_service.send_score_ready(
@@ -90,32 +107,37 @@ async def _run_scoring(submission_id: str, builder_email: str | None, builder_na
             score=score_result.get("total_score", 0),
             feedback=score_result.get("overall_feedback", ""),
         )
-        badge_service.check_top_performer(submission_id)
+    badge_service.check_top_performer(submission_id)
 
-        # Get builder email for badge notification
-        badge_check = supabase.table("badges").select("badge_type").eq("builder_id", builder_id).order("awarded_at", desc=True).limit(1).execute()
-        if badge_check.data:
-            challenge_res = supabase.table("submissions").select("challenge_id").eq("id", submission_id).single().execute()
-            if challenge_res.data:
-                email_service.send_badge_awarded(
-                    to=builder_email,
-                    builder_name=builder_name,
-                    badge_type=badge_check.data[0]["badge_type"],
-                    challenge_title=challenge_title,
-                )
+    badge_check = db_fetchone(
+        "SELECT badge_type FROM badges WHERE builder_id = :builder_id "
+        "ORDER BY awarded_at DESC LIMIT 1",
+        {"builder_id": builder_id},
+    )
+    if badge_check and builder_email:
+        email_service.send_badge_awarded(
+            to=builder_email,
+            builder_name=builder_name,
+            badge_type=badge_check["badge_type"],
+            challenge_title=challenge_title,
+        )
 
 
 @router.get("/{submission_id}", response_model=dict)
 def get_submission(submission_id: str, current_user: dict = Depends(get_current_user)):
-    result = supabase.table("submissions").select("*").eq("id", submission_id).single().execute()
-    if not result.data:
+    sub = db_fetchone(
+        "SELECT * FROM submissions WHERE id = :id",
+        {"id": submission_id},
+    )
+    if not sub:
         raise HTTPException(status_code=404, detail="Submission not found")
 
-    sub = result.data
-    # Allow: owner, challenge sponsor, admin
-    if (sub["builder_id"] != current_user["id"] and current_user["role"] != "admin"):
-        challenge = supabase.table("challenges").select("sponsor_id").eq("id", sub["challenge_id"]).single().execute()
-        if not challenge.data or challenge.data["sponsor_id"] != current_user["id"]:
+    if sub["builder_id"] != current_user["id"] and current_user["role"] != "admin":
+        challenge = db_fetchone(
+            "SELECT sponsor_id FROM challenges WHERE id = :id",
+            {"id": sub["challenge_id"]},
+        )
+        if not challenge or challenge["sponsor_id"] != current_user["id"]:
             raise HTTPException(status_code=403, detail="Not authorized")
 
     return sub
@@ -123,45 +145,71 @@ def get_submission(submission_id: str, current_user: dict = Depends(get_current_
 
 @router.get("/challenge/{challenge_id}", response_model=list)
 def get_challenge_submissions(challenge_id: str, current_user: dict = Depends(get_current_user)):
-    # Sponsor or admin only
-    challenge = supabase.table("challenges").select("sponsor_id").eq("id", challenge_id).single().execute()
-    if not challenge.data:
+    challenge = db_fetchone(
+        "SELECT sponsor_id FROM challenges WHERE id = :id",
+        {"id": challenge_id},
+    )
+    if not challenge:
         raise HTTPException(status_code=404, detail="Challenge not found")
-    if challenge.data["sponsor_id"] != current_user["id"] and current_user["role"] != "admin":
+    if challenge["sponsor_id"] != current_user["id"] and current_user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    result = supabase.table("submissions").select(
-        "*, profiles(name, github_url, bio, cv_url)"
-    ).eq("challenge_id", challenge_id).order("llm_total_score", desc=True).execute()
-    return result.data or []
+    rows = db_fetchall(
+        """
+        SELECT s.*,
+            p.name AS builder_name, p.github_url AS builder_github_url,
+            p.bio AS builder_bio, p.cv_url AS builder_cv_url
+        FROM submissions s
+        JOIN profiles p ON s.builder_id = p.id
+        WHERE s.challenge_id = :challenge_id
+        ORDER BY s.llm_total_score DESC NULLS LAST
+        """,
+        {"challenge_id": challenge_id},
+    )
+    # Nest builder profile info to match old Supabase format
+    for row in rows:
+        row["profiles"] = {
+            "name": row.pop("builder_name", None),
+            "github_url": row.pop("builder_github_url", None),
+            "bio": row.pop("builder_bio", None),
+            "cv_url": row.pop("builder_cv_url", None),
+        }
+    return rows
 
 
 @router.patch("/{submission_id}/contact", response_model=dict)
 def mark_contacted(submission_id: str, current_user: dict = Depends(get_current_user)):
-    sub = supabase.table("submissions").select("builder_id, challenge_id, contacted").eq("id", submission_id).single().execute()
-    if not sub.data:
+    sub = db_fetchone(
+        "SELECT builder_id, challenge_id, contacted FROM submissions WHERE id = :id",
+        {"id": submission_id},
+    )
+    if not sub:
         raise HTTPException(status_code=404, detail="Submission not found")
 
-    challenge = supabase.table("challenges").select("sponsor_id, title").eq("id", sub.data["challenge_id"]).single().execute()
-    if not challenge.data or challenge.data["sponsor_id"] != current_user["id"]:
+    challenge = db_fetchone(
+        "SELECT sponsor_id, title FROM challenges WHERE id = :id",
+        {"id": sub["challenge_id"]},
+    )
+    if not challenge or challenge["sponsor_id"] != current_user["id"]:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    result = supabase.table("submissions").update({"contacted": True}).eq("id", submission_id).select("*").single().execute()
-
-    # Award sponsor_fav badge
-    badge_service.award_badge(sub.data["builder_id"], sub.data["challenge_id"], "sponsor_fav")
-
-    # Notify builder
-    builder = supabase.table("profiles").select("name").eq("id", sub.data["builder_id"]).single().execute()
-    builder_auth = supabase.auth.admin.get_user_by_id(
-        supabase.table("profiles").select("user_id").eq("id", sub.data["builder_id"]).single().execute().data["user_id"]
+    result = db_execute(
+        "UPDATE submissions SET contacted = true WHERE id = :id RETURNING *",
+        {"id": submission_id},
     )
-    if builder_auth.user:
+
+    badge_service.award_badge(sub["builder_id"], sub["challenge_id"], "sponsor_fav")
+
+    builder = db_fetchone(
+        "SELECT name, email FROM profiles WHERE id = :id",
+        {"id": sub["builder_id"]},
+    )
+    if builder and builder.get("email"):
         email_service.send_contacted_notification(
-            to=builder_auth.user.email,
-            builder_name=builder.data.get("name", "Builder") if builder.data else "Builder",
+            to=builder["email"],
+            builder_name=builder.get("name", "Builder"),
             company_name=current_user.get("company_name", "A sponsor"),
-            challenge_title=challenge.data["title"],
+            challenge_title=challenge["title"],
         )
 
-    return result.data
+    return result
